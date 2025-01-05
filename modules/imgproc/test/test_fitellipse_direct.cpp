@@ -428,6 +428,7 @@ TEST(Imgproc_FitEllipseDirect_Issue_7, accuracy) {
         for (size_t j=1; i <=3; i++) {
             diff = ellipseDirectTrueVertices[i] - ellipseDirectTestVertices[j];
             float dd = diff.x * diff.x + diff.y * diff.y;
+            std::cout << "dd = " << dd << std::endl;
             if(dd<d){d=dd;}
         }
         directDiff += std::sqrt(d);

@@ -40,6 +40,7 @@
 //M*/
 #include "precomp.hpp"
 #include "opencv2/core/hal/intrin.hpp"
+#include <iostream>
 
 namespace cv
 {
@@ -340,9 +341,12 @@ double cv::contourArea( InputArray _contour, bool oriented )
 namespace cv
 {
 
-static inline Point2f getOfs(int i, float eps)
+static inline Point2f getOfs(int i, float epsx, float epsy)
 {
-    return Point2f(((i & 1)*2 - 1)*eps, ((i & 2) - 1)*eps);
+    std::mt19937 gen(i);
+    std::uniform_real_distribution<float> disx(-epsx, epsx);
+    std::uniform_real_distribution<float> disy(-epsy, epsy);
+    return Point2f(disx(gen), disy(gen));
 }
 
 static RotatedRect fitEllipseNoDirect( InputArray _points )
@@ -419,7 +423,7 @@ static RotatedRect fitEllipseNoDirect( InputArray _points )
         float eps = (float)(s/(n*2)*1e-3);
         for( i = 0; i < n; i++ )
         {
-            Point2f p = ptsf_copy[i] + getOfs(i, eps);
+            Point2f p = ptsf_copy[i] + getOfs(i, eps, eps);
             ptsf_copy[i] = p;
         }
 
@@ -704,7 +708,7 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
     Mat points = _points.getMat();
     int i, n = points.checkVector(2);
     int depth = points.depth();
-    float eps = 0;
+    float epsx = 0, epsy = 0;
     CV_Assert( n >= 0 && (depth == CV_32F || depth == CV_32S));
 
     RotatedRect box;
@@ -724,7 +728,7 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
     Matx<double, 3, 1> pVec;
 
     double x0, y0, a, b, theta, Ts;
-    double s = 0;
+    double sx = 0, sy = 0;
 
     for( i = 0; i < n; i++ )
     {
@@ -738,9 +742,14 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
     for( i = 0; i < n; i++ )
     {
         Point2f p = is_float ? ptsf[i] : Point2f((float)ptsi[i].x, (float)ptsi[i].y);
-        s += fabs(p.x - c.x) + fabs(p.y - c.y);
+        sx += fabs(p.x - c.x);
+        sy += fabs(p.y - c.y);
     }
-    double scale = 100./(s > FLT_EPSILON ? s : (double)FLT_EPSILON);
+    sx = max((double)FLT_EPSILON*n, sx);
+    sy = max((double)FLT_EPSILON*n, sy);
+    double scalex = n/sx, scaley = n/sy;
+    std::cout << sx << " " << sy << std::endl;
+    std::cout << scalex << " " << scaley << std::endl;
 
     // first, try the original pointset.
     // if it's singular, try to shift the points a bit
@@ -749,8 +758,10 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
         for( i = 0; i < n; i++ )
         {
             Point2f p = is_float ? ptsf[i] : Point2f((float)ptsi[i].x, (float)ptsi[i].y);
-            Point2f delta = getOfs(i, eps);
-            double px = (p.x + delta.x - c.x)*scale, py = (p.y + delta.y - c.y)*scale;
+            Point2f delta = getOfs(i, epsx, epsy);
+            // std::cout << "delta = " << delta.y * scaley << std::endl;
+            double px = (p.x + delta.x - c.x)*scalex, py = (p.y + delta.y - c.y)*scaley;
+            std::cout << px << " " << py << std::endl;
 
             A.at<double>(i,0) = px*px;
             A.at<double>(i,1) = px*py;
@@ -795,14 +806,17 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
         M(2,2) = (DM(0,2) + (DM(0,3)*TM(0,2) + DM(0,4)*TM(1,2) + DM(0,5)*TM(2,2))/Ts)/2.;
 
         double det = fabs(cv::determinant(M));
+        std::cout << "det = " << det << std::endl;
         if (fabs(det) > 1.0e-10)
             break;
-        eps = (float)(s/(n*2)*1e-2);
+        epsx = (float)(sx/n*1e-2);
+        epsy = (float)(sy/n*1e-2);
     }
 
     if( iter < 2 ) {
         Mat eVal, eVec;
         eigenNonSymmetric(M, eVal, eVec);
+        std::cout << M << std::endl;
 
         // Select the eigen vector {a,b,c} which satisfies 4ac-b^2 > 0
         double cond[3];
@@ -825,7 +839,11 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
         Q(0,1) = (TM(1,0)*pVec(0) +TM(1,1)*pVec(1) +TM(1,2)*pVec(2) )/Ts;
         Q(0,2) = (TM(2,0)*pVec(0) +TM(2,1)*pVec(1) +TM(2,2)*pVec(2) )/Ts;
 
-    // We compute the ellipse properties in the shifted coordinates as doing so improves the numerical accuracy.
+        pVec(0) *= scalex * scalex;
+        pVec(1) *= scalex * scaley;
+        pVec(2) *= scaley * scaley;
+        Q(0,0) *= scalex;
+        Q(0,1) *= scaley;
 
         double u1 = pVec(2)*Q(0,0)*Q(0,0) - pVec(1)*Q(0,0)*Q(0,1) + pVec(0)*Q(0,1)*Q(0,1) + pVec(1)*pVec(1)*Q(0,2);
         double u2 = pVec(0)*pVec(2)*Q(0,2);
@@ -835,10 +853,10 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
         double p1 = 2*pVec(2)*Q(0,0) - pVec(1)*Q(0,1);
         double p2 = 2*pVec(0)*Q(0,1) - pVec(1)*Q(0,0);
 
-        x0 = (p1/l3/scale) + c.x;
-        y0 = (p2/l3/scale) + c.y;
-        a = sqrt(2.)*sqrt((u1 - 4.0*u2)/((l1 - l2)*l3))/scale;
-        b = sqrt(2.)*sqrt(-1.0*((u1 - 4.0*u2)/((l1 + l2)*l3)))/scale;
+        x0 = (p1/l3) + c.x;
+        y0 = (p2/l3) + c.y;
+        a = sqrt(2.)*sqrt((u1 - 4.0*u2)/((l1 - l2)*l3));
+        b = sqrt(2.)*sqrt(-1.0*((u1 - 4.0*u2)/((l1 + l2)*l3)));
         if (pVec(1)  == 0) {
             if (pVec(0)  < pVec(2) ) {
                 theta = 0;
